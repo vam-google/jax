@@ -27,6 +27,7 @@ except ImportError:
   zstandard = None
 
 from jax._src import cache_key
+from jax._src import monitoring
 from jax._src.compilation_cache_interface import CacheInterface
 from jax._src.config import config
 from jax._src.gfile_cache import GFileCache
@@ -75,6 +76,8 @@ def initialize_cache(path) -> None:
 
 
 def _is_cache_enabled() -> bool:
+  if not config.jax_enable_compilation_cache:
+    monitoring.record_event('/jax/compilation_cache/task_disabled_cache')
   return config.jax_enable_compilation_cache
 
 
