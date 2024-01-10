@@ -1005,16 +1005,26 @@ class VectorLayoutInferer {
                  "Only 32-bit types supported");
     auto offsets = op.getOffsets().getValue();
     auto strides = op.getStrides().getValue();
-    for (auto offset_attr : offsets.take_back(2)) {
-      int off = offset_attr.cast<IntegerAttr>().getInt();
-      TPU_CHECK_OP(off == 0, "Only zero-offset slices supported.");
+    auto rank = offsets.size();
+    LayoutOffsets layout_offsets = input_layout->offsets();
+    if (layout_offsets[0].has_value()) {
+      layout_offsets[0] = (offsets[rank - 2].cast<IntegerAttr>().getInt() +
+                           layout_offsets[0].value()) %
+                          input_layout->tiling()[0];
+    }
+    if (layout_offsets[1].has_value()) {
+      layout_offsets[1] = (offsets[rank - 1].cast<IntegerAttr>().getInt() +
+                           layout_offsets[1].value()) %
+                          input_layout->tiling()[1];
     }
     for (auto stride : strides) {
       TPU_CHECK_OP(stride.cast<IntegerAttr>().getInt() == 1,
                    "Only trivial strides supported.");
     }
 
-    setLayout(op, input_layout, input_layout);
+    setLayout(op, input_layout,
+              VectorLayout(input_layout->bitwidth(), layout_offsets,
+                           input_layout->tiling(), ImplicitDim::kNone));
     return success();
   }
 
@@ -1101,18 +1111,20 @@ class VectorLayoutInferer {
         return success();
       }
       // Sublane (un)tiling.
-      if (res_rank >= 2 && layout.offsets() == LayoutOffsets{0, 0} &&
-          layout.tiling()[1] == target_shape_[1] &&
+      if (res_rank >= 2 && layout.tiling()[1] == target_shape_[1] &&
           src_ty.getDimSize(src_ty.getRank() - 1) ==
               res_shape[res_shape.size() - 1] &&
           src_ty.getDimSize(src_ty.getRank() - 2) % layout.tiling()[0] == 0 &&
           res_shape[res_shape.size() - 2] % layout.tiling()[0] == 0) {
-        setLayout(op, layout, layout);
+        setLayout(op,
+                  VectorLayout(layout.bitwidth(), LayoutOffsets{0, 0},
+                               {1, target_shape_[1]}, ImplicitDim::kNone),
+                  VectorLayout(layout.bitwidth(), LayoutOffsets{0, 0},
+                               default_tiling_, ImplicitDim::kNone));
         return success();
       }
       // Lane (un)tiling.
-      if (layout.offsets() == LayoutOffsets{0, 0} &&
-          layout.tiling()[1] == target_shape_[1] &&
+      if (layout.tiling()[1] == target_shape_[1] &&
           src_ty.getDimSize(src_ty.getRank() - 1) !=
               res_shape[res_shape.size() - 1] &&
           src_ty.getDimSize(src_ty.getRank() - 1) % layout.tiling()[1] == 0 &&
@@ -1135,9 +1147,9 @@ class VectorLayoutInferer {
           // Inferring in_layout to have tiling (1, 128) triggers any
           // necessary relayout before shapecast.
           setLayout(op,
-                    VectorLayout(layout.bitwidth(), layout.offsets(),
+                    VectorLayout(layout.bitwidth(), LayoutOffsets{0, 0},
                                  {1, target_shape_[1]}, ImplicitDim::kNone),
-                    VectorLayout(layout.bitwidth(), layout.offsets(),
+                    VectorLayout(layout.bitwidth(), LayoutOffsets{0, 0},
                                  default_tiling_, ImplicitDim::kNone));
           return success();
         }
@@ -1164,6 +1176,7 @@ class VectorLayoutInferer {
         op.emitOpError("unsupported shape cast");
         return failure();
       }
+
       unsigned bitwidth = src_ty.getElementTypeBitWidth();
       auto native_tiling = nativeTiling(bitwidth);
       if (layout.tiling() != native_tiling) {
