@@ -1486,6 +1486,47 @@ LogicalResult tpu_assume_layout_rule(RewriteContext &ctx, Operation &op,
   return success();
 }
 
+LogicalResult tpu_rotate_rule(RewriteContext &ctx, Operation &op,
+                              const ArrayRef<Layout> layouts_in,
+                              const ArrayRef<Layout> layouts_out) {
+  CHECK_EQ(layouts_in.size(), 1);
+  CHECK_EQ(layouts_out.size(), 1);
+  if (!layouts_in.front().has_value()) {
+    return op.emitOpError("Expected non-null input layout");
+  }
+  if (!layouts_out.front().has_value()) {
+    return op.emitOpError("Expected non-null output layout");
+  }
+  const VectorLayout &layout_in = *layouts_in.front();
+  const VectorLayout &layout_out = *layouts_out.front();
+  auto expected_layout = VectorLayout(32, {0, 0}, ctx.target_shape,
+                                      VectorLayout::ImplicitDim::kNone);
+  if (layout_in != expected_layout || layout_out != expected_layout) {
+    return op.emitOpError(
+        "Not implemented: rotate non-native-vreg-shaped vector");
+  }
+  OpBuilder builder(op.getContext());
+  builder.setInsertionPointAfter(&op);
+  tpu::RotateOp rotate_op = cast<tpu::RotateOp>(op);
+
+  FAILUREOR_ASSIGN_OR_RETURN(
+      const xla::Array<Value> in_tiles,
+      disassemble(builder, layout_in, rotate_op.getValue(), ctx.target_shape));
+  xla::Array<Value> out_tiles(in_tiles.dimensions());
+  out_tiles.Each([&](absl::Span<const int64_t> idxs, Value *v) {
+    *v = builder.create<tpu::RotateOp>(
+        rotate_op.getLoc(), in_tiles(idxs), rotate_op.getAmount(),
+        rotate_op.getDimension(), rotate_op.getStrideAttr());
+  });
+
+  const RollVectorsOp rolled_op =
+      assemble(builder, rotate_op.getResult().getType(), layout_out, out_tiles,
+               ctx.target_shape);
+  op.replaceAllUsesWith(rolled_op);
+  op.erase();
+  return success();
+}
+
 LogicalResult tpu_concatenate_rule(RewriteContext &ctx, Operation &op,
                                    const ArrayRef<Layout> layouts_in,
                                    const ArrayRef<Layout> layouts_out) {
@@ -3187,6 +3228,7 @@ const llvm::StringMap<rule_type> &rules() {
       {scf::ForOp::getOperationName(), scf_for_rule},
       {scf::IfOp::getOperationName(), scf_if_rule},
       {scf::YieldOp::getOperationName(), scf_yield_rule},
+      {tpu::RotateOp::getOperationName(), tpu_rotate_rule},
       {tpu::ConcatenateOp::getOperationName(), tpu_concatenate_rule},
       {tpu::IotaOp::getOperationName(), tpu_iota_rule},
       {tpu::GatherOp::getOperationName(), tpu_gather_rule},
@@ -3448,8 +3490,9 @@ xla::Array<Value> retileToReducedSublanes(
     if (rotate_amt < 0) {
       rotate_amt += target_shape[0];
     }
-    *rotated_src_vreg = builder.create<tpu::RotateOp>(
-        src_vreg.getLoc(), src_vreg, rotate_amt, /*dimension=*/0);
+    *rotated_src_vreg =
+        builder.create<tpu::RotateOp>(src_vreg.getLoc(), src_vreg, rotate_amt,
+                                      /*dimension=*/0, /*stride=*/nullptr);
   });
   // Assemble output vregs using tiles from rotated vregs using select.
   // Given, above example, destination vregs are then assembled as follows:
@@ -3558,7 +3601,8 @@ xla::Array<Value> retileToReducedSublanes(
       // dst_tile_3_0_3
       *dst_vreg = builder.create<tpu::RotateOp>(
           dst_tile.getLoc(), dst_tile,
-          target_shape[0] - first_dst_tile_sublane_offset, /*dimension=*/0);
+          target_shape[0] - first_dst_tile_sublane_offset, /*dimension=*/0,
+          /*stride=*/nullptr);
     }
   });
   return dst_vreg_array;
@@ -3613,7 +3657,7 @@ Value copy_one_sublane(OpBuilder &builder, Value src_vreg, int src_sl_idx,
   auto src_vreg_rot = builder.create<tpu::RotateOp>(
       src_vreg.getLoc(), src_vreg,
       /*amount=*/(dst_sl_idx - src_sl_idx + 8) % 8,
-      /*dimension=*/0);
+      /*dimension=*/0, /*stride=*/nullptr);
   auto boundIdxConst =
       std::bind(IdxConst, std::placeholders::_1, builder, src_vreg.getLoc());
   auto sublanes_mask = builder.create<tpu::CreateMaskOp>(
@@ -3837,11 +3881,12 @@ FailureOr<Value> relayout(OpBuilder &builder, Value v, VectorLayout src,
           sublane_diff += target_shape[0];
         }
         src_tiles.Each([&](absl::Span<const int64_t> idx, Value tile) {
-          dst_tiles(idx) = builder
-                               .create<tpu::RotateOp>(v.getLoc(), tile,
-                                                      /*amount=*/sublane_diff,
-                                                      /*dimension=*/0)
-                               .getResult();
+          dst_tiles(idx) =
+              builder
+                  .create<tpu::RotateOp>(v.getLoc(), tile,
+                                         /*amount=*/sublane_diff,
+                                         /*dimension=*/0, /*stride=*/nullptr)
+                  .getResult();
         });
       }
       const int src_subelem = *src.offsets()[0] % packing;
@@ -3908,11 +3953,12 @@ FailureOr<Value> relayout(OpBuilder &builder, Value v, VectorLayout src,
                        boundIdxConst(col_diff)});
       }
       src_tiles.Each([&](absl::Span<const int64_t> idx, Value tile) {
-        Value rot_tile = builder
-                             .create<tpu::RotateOp>(v.getLoc(), tile,
-                                                    /*amount=*/sublane_diff,
-                                                    /*dimension=*/1)
-                             .getResult();
+        Value rot_tile =
+            builder
+                .create<tpu::RotateOp>(v.getLoc(), tile,
+                                       /*amount=*/sublane_diff,
+                                       /*dimension=*/1, /*stride=*/nullptr)
+                .getResult();
         if (idx[idx.size() - 1] != 0) {
           SmallVector<int64_t> prev_idx(idx.begin(), idx.end());
           --prev_idx[idx.size() - 1];

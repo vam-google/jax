@@ -232,6 +232,10 @@ class VectorLayoutInferer {
         if (infer(op).failed()) {
           return failure();
         }
+        } else if (auto op = dyn_cast<tpu::RotateOp>(any_op)) {
+          if (infer(op).failed()) {
+            return failure();
+          }
       } else if (auto op = dyn_cast<tpu::ConcatenateOp>(any_op)) {
         if (infer(op).failed()) {
           return failure();
@@ -666,6 +670,24 @@ class VectorLayoutInferer {
     auto yield_op = op.getBody()->getTerminator();
     setInLayout(yield_op, out_layouts);
     setLayout(op, in_layouts, out_layouts);
+    return success();
+  }
+
+  LogicalResult infer(tpu::RotateOp op) {
+    auto bitwidth = op.getType().getElementTypeBitWidth();
+    if (bitwidth != 32) {
+      NYI("Rotate with non-32-bit data");
+    }
+    if (op.getType().getRank() != 2) {
+      NYI("Rotate non-2D vector");
+    }
+    if (op.getType().getShape()[0] != target_shape_[0] ||
+        op.getType().getShape()[1] != target_shape_[1]) {
+      NYI("Rotate non-native-vreg-shaped vector");
+    }
+    auto layout = VectorLayout(bitwidth, {0, 0}, nativeTiling(bitwidth),
+                               ImplicitDim::kNone);
+    setLayout(op, layout, layout);
     return success();
   }
 

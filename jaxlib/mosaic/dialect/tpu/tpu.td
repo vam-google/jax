@@ -185,13 +185,14 @@ def TPU_LoadOp : TPU_Op<"load"> {
 
 def TPU_RotateOp : TPU_Op<"rotate", [Pure, SameOperandsAndResultType]> {
   let arguments = (ins
-    AnyType:$value,
+    AnyVector:$value,
     SI32Attr:$amount,
-    I32Attr:$dimension
+    I32Attr:$dimension,
+    OptionalAttr<I32Attr>:$stride
   );
-  let results = (outs AnyType:$result);
+  let results = (outs AnyVector:$result);
   let assemblyFormat = [{
-    $value `by` $amount `dim` $dimension attr-dict `:` type($value)
+    $value `by` $amount `dim` $dimension (`stride` $stride^)? attr-dict `:` type($value)
   }];
 }
 
