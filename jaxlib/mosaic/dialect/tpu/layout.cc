@@ -602,7 +602,7 @@ std::unique_ptr<VRegDataBounds> VectorLayout::tileDataBounds(
 bool VectorLayout::generalizes(
     const VectorLayout& other, ArrayRef<int64_t> shape,
     const std::array<int64_t, 2> target_shape) const {
-  if (bitwidth_ != other.bitwidth_) {
+  if (bitwidth_ != other.bitwidth_ && bitwidth_ != 1 && other.bitwidth_ != 1) {
     return false;
   }
   for (auto [s, o] : llvm::zip(offsets_, other.offsets_)) {

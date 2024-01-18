@@ -1482,6 +1482,19 @@ class VectorLayoutInferer {
             "Elementwise op has no vector operands but returns a vector?");
         return failure();
       }
+      // When the inferred out_layout's bitwidth is different from the output's
+      // element bitwidth, we need to respect the output's element bitwidth.
+      // This happens when either one of the operands or the output is a mask.
+      if (final_out_layout->bitwidth() != out_vty.getElementTypeBitWidth()) {
+        TPU_CHECK_OP(final_out_layout->bitwidth() == 1 ||
+                         out_vty.getElementTypeBitWidth() == 1,
+                     "failed to infer out layout");
+        final_out_layout = VectorLayout(
+            out_vty.getElementTypeBitWidth(),
+            {final_out_layout->offsets()[0].value_or(0),
+             final_out_layout->offsets()[1].value_or(0)},
+            final_out_layout->tiling(), final_out_layout->implicit_dim());
+      }
     }
     CHECK_EQ(in_layouts.size(), op->getNumOperands()) << Print(op);
     SmallVector<Layout, 4> final_in_layouts;
