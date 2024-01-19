@@ -111,10 +111,7 @@ void LaunchThreeFry2x32Kernel(gpuStream_t stream, void** buffers,
   int output_idx = 4;
   if (n < 0) {
     // n is an operand in device memory.
-    gpuMemcpyAsync((void*)&n, reinterpret_cast<const std::int64_t*>(buffers[4]),
-                   sizeof(n), gpuMemcpyDeviceToHost,
-                   stream);
-    gpuStreamSynchronize(stream);
+    gpuMemcpy((void*)&n, buffers[4], sizeof(n), gpuMemcpyDeviceToHost);
     output_idx = 5;
   }
 
